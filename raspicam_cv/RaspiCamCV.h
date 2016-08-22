@@ -36,7 +36,8 @@ RaspiCamCvCapture * raspiCamCvCreateCameraCapture2(int index, RASPIVID_CONFIG* c
 RaspiCamCvCapture * raspiCamCvCreateCameraCapture(int index);
 void raspiCamCvReleaseCapture(RaspiCamCvCapture ** capture);
 double raspiCamCvGetCaptureProperty(RaspiCamCvCapture * capture, int property_id);
-int raspiCamCvSetCaptureProperty(RaspiCamCvCapture * capture, int property_id, double value);
+//int raspiCamCvSetCaptureProperty(RaspiCamCvCapture * capture, int property_id, double value);
+void raspiCamCvSetCaptureProperty(RaspiCamCvCapture * capture, int property_id, double value);
 IplImage * raspiCamCvQueryFrame(RaspiCamCvCapture * capture);
 
 #ifdef __cplusplus
