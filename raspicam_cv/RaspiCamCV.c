@@ -1,5 +1,13 @@
 /////////////////////////////////////////////////////////////
 //
+// UPDATE 2014-24-10:
+// I edited this program for 320 x 240 resolution instead of the normal 640 x 480.
+// use this file for compiling the raspicam library instead of the original file by Emil Valkov,
+// as 640 x 480 is a too high resolution to run smoothly on the Raspberry Pi.
+// Emil Valkov's github repository: https://github.com/robidouille.
+//
+//
+//
 // Many source code lines are copied from RaspiVid.c
 // Copyright (c) 2012, Broadcom Europe Ltd
 // 
@@ -20,12 +28,10 @@
 // similar to what OpenCV provides, but uses the RaspiCam
 // underneath - September 22 2013.
 //
-// cvCreateCameraCapture 	-> raspiCamCvCreateCameraCapture
-//							-> raspiCamCvCreateCameraCapture2(with config)
-// cvReleaseCapture 		-> raspiCamCvReleaseCapture
-// cvSetCaptureProperty 	-> raspiCamCvSetCaptureProperty
-// cvGetCaptureProperty 	-> raspiCamCvGetCaptureProperty
-// cvQueryFrame 			-> raspiCamCvQueryFrame
+// cvCreateCameraCapture -> raspiCamCvCreateCameraCapture
+// cvReleaseCapture -> raspiCamCvReleaseCapture
+// cvSetCaptureProperty -> raspiCamCvSetCaptureProperty
+// cvQueryFrame -> raspiCamCvQueryFrame
 //
 /////////////////////////////////////////////////////////////
 
@@ -81,27 +87,31 @@ int mmal_status_to_int(MMAL_STATUS_T status);
 typedef struct _RASPIVID_STATE
 {
 	int finished;
-	int width;            	/// Requested width of image
-	int height;           	/// requested height of image
-	int bitrate;          	/// Requested bitrate
-	int framerate;        	/// Requested frame rate (fps)
-	int monochrome;			/// Capture in gray only (2x faster)
+	int width;                          /// Requested width of image
+	int height;                         /// requested height of image
+	int bitrate;                        /// Requested bitrate
+	int framerate;                      /// Requested frame rate (fps)
+	int graymode;			/// capture in gray only (2x faster)
 	int immutableInput;     /// Flag to specify whether encoder works in place or creates a new buffer. Result is preview can display either
                             /// the camera output or the encoder output (with compression artifacts)
 	RASPICAM_CAMERA_PARAMETERS camera_parameters; /// Camera setup parameters
 
 	MMAL_COMPONENT_T *camera_component;    /// Pointer to the camera component
 	MMAL_COMPONENT_T *encoder_component;   /// Pointer to the encoder component
+	MMAL_CONNECTION_T *preview_connection; /// Pointer to the connection from camera to preview
+	MMAL_CONNECTION_T *encoder_connection; /// Pointer to the connection from camera to encoder
 
 	MMAL_POOL_T *video_pool; /// Pointer to the pool of buffers used by encoder output port
 
-	IplImage *dstImage;
+	IplImage *py, *pu, *pv;
+	IplImage *pu_big, *pv_big, *yuvImage,* dstImage;
 
 	VCOS_SEMAPHORE_T capture_sem;
 	VCOS_SEMAPHORE_T capture_done_sem;
    
 } RASPIVID_STATE;
 
+// default status
 static void default_status(RASPIVID_STATE *state)
 {
    if (!state)
@@ -115,12 +125,12 @@ static void default_status(RASPIVID_STATE *state)
 
    // Now set anything non-zero
    state->finished          = 0;
-   state->width 			= 640;      // use a multiple of 320 (640, 1280)
-   state->height 			= 480;		// use a multiple of 240 (480, 960)
+   state->width 			= 320;      // use a multiple of 320 (640, 1280)
+   state->height 			= 240;		// use a multiple of 240 (480, 960)
    state->bitrate 			= 17000000; // This is a decent default bitrate for 1080p
    state->framerate 		= VIDEO_FRAME_RATE_NUM;
    state->immutableInput 	= 1;
-   state->monochrome 		= 0;		// Gray (1) much faster than color (0)
+   state->graymode 			= 0;		// Gray (1) much faster than color (0)
    
    // Set up the camera_parameters to default
    raspicamcontrol_set_defaults(&state->camera_parameters);
@@ -152,9 +162,15 @@ static void video_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buffe
 			//
 			int w=state->width;	// get image size
 			int h=state->height;
+			int h4=h/4;
 
-			int pixelSize = state->monochrome ? 1 : 3;
-			memcpy(state->dstImage->imageData,buffer->data,w*h*pixelSize);	
+			memcpy(state->py->imageData,buffer->data,w*h);	// read Y
+		
+			if (state->graymode==0)
+			{
+				memcpy(state->pu->imageData,buffer->data+w*h,w*h4); // read U
+				memcpy(state->pv->imageData,buffer->data+w*h+w*h4,w*h4); // read v
+			}
 
 			vcos_semaphore_post(&state->capture_done_sem);
 			vcos_semaphore_wait(&state->capture_sem);
@@ -244,18 +260,8 @@ static MMAL_COMPONENT_T *create_camera_component(RASPIVID_STATE *state)
 	// Set the encode format on the video  port
 	
 	format = video_port->format;
-	if (state->monochrome)
-	{
-		format->encoding_variant = MMAL_ENCODING_I420;
-		format->encoding = MMAL_ENCODING_I420;
-	}
-	else
-	{
-		format->encoding =
-			mmal_util_rgb_order_fixed(video_port) ? MMAL_ENCODING_BGR24 : MMAL_ENCODING_RGB24;
-		format->encoding_variant = 0;
-	}
-
+	format->encoding_variant = MMAL_ENCODING_I420;
+	format->encoding = MMAL_ENCODING_I420;
 	format->es->video.width = state->width;
 	format->es->video.height = state->height;
 	format->es->video.crop.x = 0;
@@ -373,6 +379,12 @@ static void destroy_encoder_component(RASPIVID_STATE *state)
    {
       mmal_port_pool_destroy(state->encoder_component->output[0], state->video_pool);
    }
+
+   if (state->encoder_component)
+   {
+      mmal_component_destroy(state->encoder_component);
+      state->encoder_component = NULL;
+   }
 }
 
 /**
@@ -412,50 +424,7 @@ static void check_disable_port(MMAL_PORT_T *port)
       mmal_port_disable(port);
 }
 
-double raspiCamCvGetCaptureProperty(RaspiCamCvCapture * capture, int property_id)
-{
-    switch(property_id)
-    {
-		case RPI_CAP_PROP_FRAME_HEIGHT:
-			return capture->pState->height;
-		case RPI_CAP_PROP_FRAME_WIDTH:
-			return capture->pState->width;
-		case RPI_CAP_PROP_FPS:
-			return capture->pState->framerate;
-		case RPI_CAP_PROP_MONOCHROME:
-			return capture->pState->monochrome;
-		case RPI_CAP_PROP_BITRATE:
-			return capture->pState->bitrate;
-    }
-    return 0;
-}
-
-int raspiCamCvSetCaptureProperty(RaspiCamCvCapture * capture, int property_id, double value)
-{
-    int retval = 0; // indicate failure
-
-/* 
-	Naive implementation does not work.	Need to reset the camera and restart
-	switch(property_id)
-	{
-		case RPI_CAP_PROP_FRAME_HEIGHT:
-			capture->pState->height = value;
-			break;
-		case RPI_CAP_PROP_FRAME_WIDTH:
-			capture->pState->width = value;
-			break;
-		case RPI_CAP_PROP_FPS:
-			capture->pState->framerate = value;
-			break;
-		default:
-			retval = 0;
-			break;
-	}
-*/	
-	return retval;
-}
-
-RaspiCamCvCapture * raspiCamCvCreateCameraCapture2(int index, RASPIVID_CONFIG* config)
+RaspiCamCvCapture * raspiCamCvCreateCameraCapture(int index)
 {
 	RaspiCamCvCapture * capture = (RaspiCamCvCapture*)malloc(sizeof(RaspiCamCvCapture));
 	// Our main data storage vessel..
@@ -468,23 +437,25 @@ RaspiCamCvCapture * raspiCamCvCreateCameraCapture2(int index, RASPIVID_CONFIG* c
 
 	bcm_host_init();
 
+	// read default status
 	default_status(state);
-	
-	if (config != NULL)	{
-		if (config->width != 0) 		state->width = config->width;
-		if (config->height != 0) 		state->height = config->height;
-		if (config->bitrate != 0) 		state->bitrate = config->bitrate;
-		if (config->framerate != 0) 	state->framerate = config->framerate;
-		if (config->monochrome != 0) 	state->monochrome = config->monochrome;
-	}
 
 	int w = state->width;
 	int h = state->height;
-	int pixelSize = state->monochrome ? 1 : 3;
-	state->dstImage = cvCreateImage(cvSize(w,h), IPL_DEPTH_8U, pixelSize); // final picture to display
-
+	state->py = cvCreateImage(cvSize(w,h), IPL_DEPTH_8U, 1);		// Y component of YUV I420 frame
+	if (state->graymode==0) {
+		state->pu = cvCreateImage(cvSize(w/2,h/2), IPL_DEPTH_8U, 1);	// U component of YUV I420 frame
+		state->pv = cvCreateImage(cvSize(w/2,h/2), IPL_DEPTH_8U, 1);	// V component of YUV I420 frame
+	}
 	vcos_semaphore_create(&state->capture_sem, "Capture-Sem", 0);
 	vcos_semaphore_create(&state->capture_done_sem, "Capture-Done-Sem", 0);
+
+	if (state->graymode==0) {
+		state->pu_big = cvCreateImage(cvSize(w,h), IPL_DEPTH_8U, 1);
+		state->pv_big = cvCreateImage(cvSize(w,h), IPL_DEPTH_8U, 1);
+		state->yuvImage = cvCreateImage(cvSize(w,h), IPL_DEPTH_8U, 3);
+		state->dstImage = cvCreateImage(cvSize(w,h), IPL_DEPTH_8U, 3); // final picture to display
+	}
 
 	// create camera
 	if (!create_camera_component(state))
@@ -535,16 +506,11 @@ RaspiCamCvCapture * raspiCamCvCreateCameraCapture2(int index, RASPIVID_CONFIG* c
 	return capture;
 }
 
-RaspiCamCvCapture * raspiCamCvCreateCameraCapture(int index)
-{
-	return raspiCamCvCreateCameraCapture2(index, NULL);
-}
-
 void raspiCamCvReleaseCapture(RaspiCamCvCapture ** capture)
 {
 	RASPIVID_STATE * state = (*capture)->pState;
 
-	// Unblock the callback.
+	// Unblock the the callback.
 	state->finished = 1;
 	vcos_semaphore_post(&state->capture_sem);
 	vcos_semaphore_wait(&state->capture_done_sem);
@@ -557,11 +523,26 @@ void raspiCamCvReleaseCapture(RaspiCamCvCapture ** capture)
 
 	destroy_camera_component(state);
 
-	cvReleaseImage(&state->dstImage);
+	cvReleaseImage(&state->pu);
+	if (state->graymode==0) {
+		cvReleaseImage(&state->pv);
+		cvReleaseImage(&state->py);
+	}
+
+	if (state->graymode==0) {
+		cvReleaseImage(&state->pu_big);
+		cvReleaseImage(&state->pv_big);
+		cvReleaseImage(&state->yuvImage);
+		cvReleaseImage(&state->dstImage);
+	}
 
 	free(state);
 	free(*capture);
 	*capture = 0;
+}
+
+void raspiCamCvSetCaptureProperty(RaspiCamCvCapture * capture, int property_id, double value)
+{
 }
 
 IplImage * raspiCamCvQueryFrame(RaspiCamCvCapture * capture)
@@ -570,5 +551,14 @@ IplImage * raspiCamCvQueryFrame(RaspiCamCvCapture * capture)
 	vcos_semaphore_post(&state->capture_sem);
 	vcos_semaphore_wait(&state->capture_done_sem);
 
-	return state->dstImage;
+	if (state->graymode==0)
+	{
+		cvResize(state->pu, state->pu_big, CV_INTER_NN);
+		cvResize(state->pv, state->pv_big, CV_INTER_NN);  //CV_INTER_LINEAR looks better but it's slower
+		cvMerge(state->py, state->pu_big, state->pv_big, NULL, state->yuvImage);
+	
+		cvCvtColor(state->yuvImage,state->dstImage,CV_YCrCb2RGB);	// convert in RGB color space (slow)
+		return state->dstImage;
+	}
+	return state->py;
 }

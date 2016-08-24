@@ -1,4 +1,25 @@
-###Prerequisites###
+raspberrypiカメラモジュールでOpenCVを使えるようにするこのraspicam_cvプロジェクトに
+ライントラッキングRCJ2014をマージしてあります。
+
+利用時にはこちらも参照して下さい。
+https://github.com/bleach31/image-processing
+
+やったこと
+
+1.RCJ2014のMakefile,RaspiCamCV.c,RCJ_2014.cppをコピー
+
+2.RCJ2014のMakefileとraspicam_cvのRaspiCamCV.hを編集
+   Makefileは誤植の修正とテストをビルドから外した
+   RaspiCamCV.hはRaspiCamCV.cとの関数定義を同じに書き換え
+
+使い方
+
+1.raspicam_cvの説明にしたがってメイクまで進める
+
+2.RCJ2014の説明にしたがってすすめる.Step2はすでにコピー済みなので飛ばす。
+
+
+### Prerequisites ###
 First make sure you have cmake and git installed:
 
     sudo apt-get install cmake git
